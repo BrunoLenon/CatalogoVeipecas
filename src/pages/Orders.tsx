@@ -1,107 +1,209 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
-import { generateOrderPDF } from '../lib/pdf';
-import { ClipboardList, Search, Package, Truck, CheckCircle, XCircle, FileDown, ChevronDown, ChevronRight, Download, ShoppingBag, DivideIcon as LucideIcon } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { 
+  ShoppingCart, 
+  Trash2, 
+  Plus, 
+  Minus, 
+  ShoppingBag,
+  ArrowRight
+} from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { Order } from '../types/order';
-import * as XLSX from 'xlsx';
 
-export default function Orders() {
+interface CartItem {
+  id: string;
+  name: string;
+  price: number;
+  quantity: number;
+  image_url?: string;
+  stock: number;
+  code: string;        // Adicionado código do produto
+  description: string; // Adicionado descrição completa
+}
+
+interface CartData {
+  id: string;
+  items: CartItem[];
+  total: number;
+}
+
+export default function Cart() {
   const { user } = useAuth();
-  const [orders, setOrders] = useState<Order[]>([]);
+  const navigate = useNavigate();
+  const [cart, setCart] = useState<CartData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
 
   useEffect(() => {
-    fetchOrders();
+    if (user) {
+      fetchCart();
+    }
   }, [user]);
 
-  async function fetchOrders() {
+  async function fetchCart() {
     try {
       setLoading(true);
-      let query = supabase
-        .from('orders')
+
+      const { data: cartId } = await supabase
+        .rpc('get_or_create_cart', { p_user_id: user?.id });
+
+      if (!cartId) throw new Error('Erro ao criar carrinho');
+
+      const { data, error } = await supabase
+        .from('cart')
         .select(`
           *,
-          users:user_id (name, email),
-          seller:seller_id (name)
-        `);
-
-      // Filtrar pedidos baseado no papel do usuário
-      if (user?.role === 'customer') {
-        query = query.eq('user_id', user.id);
-      } else if (user?.role === 'seller') {
-        query = query.eq('seller_id', user.id);
-      }
-
-      const { data, error } = await query.order('created_at', { ascending: false });
+          items (
+            *,
+            products (code, description)
+          )
+        `)
+        .eq('id', cartId)
+        .single();
 
       if (error) throw error;
-      setOrders(data || []);
+
+      // Mapear os itens para incluir code e description
+      const formattedItems = data.items.map((item: any) => ({
+        ...item,
+        code: item.products.code,
+        description: item.products.description
+      }));
+
+      setCart({
+        ...data,
+        items: formattedItems
+      });
     } catch (error) {
-      console.error('Erro ao buscar pedidos:', error);
-      toast.error('Erro ao carregar pedidos');
+      console.error('Erro ao buscar carrinho:', error);
+      toast.error('Erro ao carregar carrinho');
     } finally {
       setLoading(false);
     }
   }
 
-  const handleExportExcel = () => {
+  const updateItemQuantity = async (itemId: string, newQuantity: number) => {
+    if (!cart) return;
+
     try {
-      const exportData = orders.map(order => ({
-        'Número do Pedido': order.order_number,
-        'Cliente': order.users?.name,
-        'Email': order.users?.email,
-        'Vendedor': order.seller?.name || 'N/A',
-        'Status': getStatusLabel(order.status).label,
-        'Total': formatCurrency(order.total),
-        'Data': new Date(order.created_at).toLocaleDateString(),
-        'Concluído em': order.completed_at ? new Date(order.completed_at).toLocaleDateString() : 'N/A'
-      }));
+      const updatedItems = cart.items.map(item => {
+        if (item.id === itemId) {
+          if (newQuantity > item.stock) {
+            toast.error('Quantidade maior que o estoque disponível');
+            return item;
+          }
+          return { ...item, quantity: newQuantity };
+        }
+        return item;
+      });
 
-      const ws = XLSX.utils.json_to_sheet(exportData);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Pedidos');
-      XLSX.writeFile(wb, 'pedidos.xlsx');
+      const newTotal = updatedItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
-      toast.success('Relatório exportado com sucesso!');
+      const { error } = await supabase
+        .from('cart')
+        .update({
+          items: updatedItems,
+          total: newTotal,
+          saved_at: new Date().toISOString()
+        })
+        .eq('id', cart.id);
+
+      if (error) throw error;
+
+      setCart(prev => prev ? {
+        ...prev,
+        items: updatedItems,
+        total: newTotal
+      } : null);
+
+      toast.success('Carrinho atualizado');
     } catch (error) {
-      console.error('Erro ao exportar relatório:', error);
-      toast.error('Erro ao exportar relatório');
+      console.error('Erro ao atualizar quantidade:', error);
+      toast.error('Erro ao atualizar carrinho');
     }
   };
 
-  const handleExportPDF = async (order: Order) => {
+  const removeItem = async (itemId: string) => {
+    if (!cart) return;
+
     try {
-      await generateOrderPDF(order);
-      toast.success('PDF gerado com sucesso!');
+      const updatedItems = cart.items.filter(item => item.id !== itemId);
+      const newTotal = updatedItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+
+      const { error } = await supabase
+        .from('cart')
+        .update({
+          items: updatedItems,
+          total: newTotal,
+          saved_at: new Date().toISOString()
+        })
+        .eq('id', cart.id);
+
+      if (error) throw error;
+
+      setCart(prev => prev ? {
+        ...prev,
+        items: updatedItems,
+        total: newTotal
+      } : null);
+
+      toast.success('Item removido do carrinho');
     } catch (error) {
-      console.error('Erro ao gerar PDF:', error);
-      toast.error('Erro ao gerar PDF');
+      console.error('Erro ao remover item:', error);
+      toast.error('Erro ao remover item do carrinho');
     }
   };
 
-  const getStatusLabel = (status: string) => {
-    const statusMap: Record<string, { label: string; color: string }> = {
-      pending: { label: 'Pendente', color: 'bg-yellow-100 text-yellow-800' },
-      processing: { label: 'Em Processamento', color: 'bg-blue-100 text-blue-800' },
-      completed: { label: 'Concluído', color: 'bg-green-100 text-green-800' },
-      cancelled: { label: 'Cancelado', color: 'bg-red-100 text-red-800' }
-    };
-    return statusMap[status] || { label: status, color: 'bg-gray-100 text-gray-800' };
-  };
+  const handleCheckout = async () => {
+    if (!cart || cart.items.length === 0) return;
 
-  const getStatusIcon = (status: string): LucideIcon => {
-    const icons = {
-      pending: ClipboardList,
-      processing: Truck,
-      completed: CheckCircle,
-      cancelled: XCircle
-    };
-    return icons[status as keyof typeof icons] || Package;
+    try {
+      setIsCheckingOut(true);
+
+      const orderNumber = `${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}${Math.floor(1000 + Math.random() * 9000)}`;
+
+      const { data: order, error: orderError } = await supabase
+        .from('orders')
+        .insert({
+          order_number: orderNumber,
+          user_id: user?.id,
+          seller_id: user?.seller_id,
+          items: cart.items,
+          total: cart.total,
+          status: 'pending'
+        })
+        .select()
+        .single();
+
+      if (orderError) throw orderError;
+
+      const { error: cartError } = await supabase
+        .from('cart')
+        .update({ is_finalized: true })
+        .eq('id', cart.id);
+
+      if (cartError) throw cartError;
+
+      for (const item of cart.items) {
+        const { error: stockError } = await supabase
+          .from('products')
+          .update({ stock: item.stock - item.quantity })
+          .eq('id', item.id);
+
+        if (stockError) throw stockError;
+      }
+
+      toast.success('Pedido realizado com sucesso!');
+      navigate('/pedidos');
+    } catch (error) {
+      console.error('Erro ao finalizar pedido:', error);
+      toast.error('Erro ao finalizar pedido');
+    } finally {
+      setIsCheckingOut(false);
+    }
   };
 
   const formatCurrency = (value: number) => {
@@ -111,225 +213,143 @@ export default function Orders() {
     });
   };
 
-  const filteredOrders = orders.filter(order =>
-    order.order_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    order.users?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    order.users?.email.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  const toggleOrderExpansion = (orderId: string) => {
-    setExpandedOrder(expandedOrder === orderId ? null : orderId);
-  };
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+      </div>
+    );
+  }
 
   return (
     <div>
-      <div className="md:flex md:items-center md:justify-between mb-6">
-        <div className="flex-1 min-w-0">
-          <h2 className="text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate">
-            Pedidos
-          </h2>
-        </div>
-        <div className="mt-4 flex md:mt-0 md:ml-4">
-          <button
-            onClick={handleExportExcel}
-            className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-          >
-            <FileDown className="h-5 w-5 mr-2" />
-            Exportar Excel
-          </button>
-        </div>
-      </div>
+      <h2 className="text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate mb-6">
+        Carrinho
+      </h2>
 
       <div className="bg-white shadow rounded-lg">
-        <div className="p-4 border-b border-gray-200">
-          <div className="relative rounded-md shadow-sm">
-            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <Search className="h-5 w-5 text-gray-400" />
-            </div>
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="focus:ring-indigo-500 focus:border-indigo-500 block w-full pl-10 sm:text-sm border-gray-300 rounded-md"
-              placeholder="Buscar pedidos..."
-            />
-          </div>
-        </div>
-
-        <div className="divide-y divide-gray-200">
-          {loading ? (
-            <div className="flex items-center justify-center p-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-            </div>
-          ) : filteredOrders.length > 0 ? (
-            filteredOrders.map((order) => {
-              const status = getStatusLabel(order.status);
-              const StatusIcon = getStatusIcon(order.status);
-              const isExpanded = expandedOrder === order.id;
-              
-              return (
-                <div key={order.id} className="group">
-                  {/* Cabeçalho do Pedido */}
-                  <div
-                    onClick={() => toggleOrderExpansion(order.id)}
-                    className="p-4 hover:bg-gray-50 cursor-pointer transition-colors duration-150"
+        {cart && cart.items.length > 0 ? (
+          <div className="divide-y divide-gray-200">
+            <div className="p-6">
+              <AnimatePresence>
+                {cart.items.map((item) => (
+                  <motion.div
+                    key={item.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    className="flex items-center py-4 space-x-4"
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-4">
-                        <div className="flex-shrink-0">
-                          {isExpanded ? (
-                            <ChevronDown className="h-5 w-5 text-gray-400" />
-                          ) : (
-                            <ChevronRight className="h-5 w-5 text-gray-400" />
-                          )}
+                    <div className="flex-shrink-0 w-16 h-16">
+                      {item.image_url ? (
+                        <img
+                          src={item.image_url}
+                          alt={item.name}
+                          className="w-full h-full object-cover rounded-md"
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-gray-200 rounded-md flex items-center justify-center">
+                          <ShoppingBag className="h-8 w-8 text-gray-400" />
                         </div>
-                        <div>
-                          <div className="flex items-center">
-                            <span className="text-sm font-medium text-gray-900 mr-2">
-                              #{order.order_number}
-                            </span>
-                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}>
-                              <StatusIcon className="h-4 w-4 mr-1" />
-                              {status.label}
-                            </span>
-                          </div>
-                          <div className="mt-1 text-sm text-gray-500">
-                            {order.users?.name} • {new Date(order.created_at).toLocaleDateString()}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center space-x-4">
-                        <div className="text-right">
-                          <div className="text-sm font-medium text-gray-900">
-                            {formatCurrency(order.total)}
-                          </div>
-                          <div className="text-sm text-gray-500">
-                            {order.items.length} {order.items.length === 1 ? 'item' : 'itens'}
-                          </div>
-                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="flex-1">
+                      <h3 className="text-lg font-medium text-gray-900">
+                        {item.name}
+                      </h3>
+                      <p className="mt-1 text-sm text-gray-600">
+                        Código: {item.code}
+                      </p>
+                      <p className="mt-1 text-sm text-gray-500">
+                        {item.description}
+                      </p>
+                      <p className="mt-1 text-sm text-gray-700">
+                        {formatCurrency(item.price)} / un
+                      </p>
+                    </div>
+
+                    <div className="flex items-center space-x-4">
+                      <div className="flex items-center border rounded-md">
                         <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleExportPDF(order);
-                          }}
-                          className="text-gray-400 hover:text-gray-600 transition-colors duration-200"
-                          title="Baixar PDF"
+                          onClick={() => updateItemQuantity(item.id, Math.max(0, item.quantity - 1))}
+                          className="p-2 text-gray-600 hover:text-gray-900"
                         >
-                          <Download className="h-5 w-5" />
+                          <Minus className="h-4 w-4" />
+                        </button>
+                        <span className="px-4 py-2 text-gray-900">
+                          {item.quantity}
+                        </span>
+                        <button
+                          onClick={() => updateItemQuantity(item.id, item.quantity + 1)}
+                          className="p-2 text-gray-600 hover:text-gray-900"
+                          disabled={item.quantity >= item.stock}
+                        >
+                          <Plus className="h-4 w-4" />
                         </button>
                       </div>
-                    </div>
-                  </div>
 
-                  {/* Detalhes do Pedido */}
-                  <AnimatePresence>
-                    {isExpanded && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.2 }}
-                        className="overflow-hidden bg-gray-50 border-t border-gray-200"
+                      <button
+                        onClick={() => removeItem(item.id)}
+                        className="text-red-600 hover:text-red-900"
                       >
-                        <div className="p-4">
-                          {/* Informações do Cliente */}
-                          <div className="mb-6">
-                            <h4 className="text-sm font-medium text-gray-900 mb-2">
-                              Informações do Cliente
-                            </h4>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                              <div>
-                                <p className="text-sm text-gray-500">Nome</p>
-                                <p className="text-sm font-medium text-gray-900">
-                                  {order.users?.name}
-                                </p>
-                              </div>
-                              <div>
-                                <p className="text-sm text-gray-500">Email</p>
-                                <p className="text-sm font-medium text-gray-900">
-                                  {order.users?.email}
-                                </p>
-                              </div>
-                            </div>
-                          </div>
+                        <Trash2 className="h-5 w-5" />
+                      </button>
+                    </div>
 
-                          {/* Itens do Pedido */}
-                          <div>
-                            <h4 className="text-sm font-medium text-gray-900 mb-2">
-                              Itens do Pedido
-                            </h4>
-                            <div className="space-y-2">
-                              {order.items.map((item: any, index: number) => (
-                                <div
-                                  key={index}
-                                  className="flex items-center justify-between p-3 bg-white rounded-lg shadow-sm"
-                                >
-                                  <div className="flex items-center">
-                                    {item.image_url ? (
-                                      <img
-                                        src={item.image_url}
-                                        alt={item.name}
-                                        className="h-12 w-12 rounded object-cover"
-                                      />
-                                    ) : (
-                                      <div className="h-12 w-12 rounded bg-gray-200 flex items-center justify-center">
-                                        <ShoppingBag className="h-6 w-6 text-gray-400" />
-                                      </div>
-                                    )}
-                                    <div className="ml-4">
-                                      <div className="text-sm font-medium text-gray-900">
-                                        {item.name}
-                                      </div>
-                                      <div className="text-sm text-gray-500">
-                                        Quantidade: {item.quantity}
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div className="text-right">
-                                    <div className="text-sm font-medium text-gray-900">
-                                      {formatCurrency(item.price * item.quantity)}
-                                    </div>
-                                    <div className="text-sm text-gray-500">
-                                      {formatCurrency(item.price)} cada
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Total e Ações */}
-                          <div className="mt-6 flex items-center justify-between">
-                            <div className="text-sm text-gray-500">
-                              Total de {order.items.length} {order.items.length === 1 ? 'item' : 'itens'}
-                            </div>
-                            <div className="text-lg font-medium text-gray-900">
-                              {formatCurrency(order.total)}
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              );
-            })
-          ) : (
-            <div className="flex flex-col items-center justify-center p-8 text-gray-500">
-              <ClipboardList className="h-12 w-12 mb-3" />
-              <span className="text-lg">Nenhum pedido encontrado</span>
-              {searchTerm ? (
-                <p className="text-sm text-gray-400 mt-2">
-                  Tente buscar com outros termos
-                </p>
-              ) : (
-                <p className="text-sm text-gray-400 mt-2">
-                  Seus pedidos aparecerão aqui
-                </p>
-              )}
+                    <div className="text-right">
+                      <p className="text-lg font-medium text-gray-900">
+                        {formatCurrency(item.price * item.quantity)}
+                      </p>
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
             </div>
-          )}
-        </div>
+
+            <div className="p-6 bg-gray-50">
+              <div className="flex items-center justify-between">
+                <p className="text-lg font-medium text-gray-900">Total</p>
+                <p className="text-2xl font-semibold text-gray-900">
+                  {formatCurrency(cart.total)}
+                </p>
+              </div>
+
+              <button
+                onClick={handleCheckout}
+                disabled={isCheckingOut}
+                className="mt-6 w-full flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-base font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+              >
+                {isCheckingOut ? (
+                  <div className="flex items-center">
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
+                    Finalizando...
+                  </div>
+                ) : (
+                  <>
+                    Finalizar Pedido
+                    <ArrowRight className="ml-2 h-5 w-5" />
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center p-8 text-gray-500">
+            <ShoppingCart className="h-12 w-12 mb-3" />
+            <span className="text-lg">Seu carrinho está vazio</span>
+            <p className="text-sm text-gray-400 mt-2">
+              Adicione produtos ao seu carrinho para continuar
+            </p>
+            <button
+              onClick={() => navigate('/produtos')}
+              className="mt-4 inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+            >
+              <ShoppingBag className="h-5 w-5 mr-2" />
+              Ver Produtos
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
