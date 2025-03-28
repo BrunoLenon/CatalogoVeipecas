@@ -36,7 +36,6 @@ export default function Categories() {
     name: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     fetchCategories();
@@ -206,7 +205,6 @@ export default function Categories() {
   };
 
   const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    setImporting(true);
     try {
       const file = e.target.files?.[0];
       if (!file) return;
@@ -298,7 +296,6 @@ export default function Categories() {
     } catch (error) {
       console.error('Erro na importação:', error);
       toast.error('Erro ao importar categorias');
-    setImporting(false);
     }
 
     e.target.value = '';
@@ -361,12 +358,6 @@ export default function Categories() {
       </div>
 
       <div className="bg-white shadow rounded-lg">
-      {importing && (
-        <div className="flex items-center justify-center py-4 text-indigo-600 text-sm font-medium">
-          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-600 mr-3"></div>
-          Importando categorias, por favor aguarde...
-        </div>
-      )}
         <div className="p-4 border-b border-gray-200">
           <div className="relative rounded-md shadow-sm">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">

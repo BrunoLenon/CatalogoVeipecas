@@ -129,24 +129,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await checkUser();
 
       const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-        if (!mounted) return;
+  console.log('Auth state changed:', event, session);
 
-        console.log('Auth state changed:', event, session);
+  if (event === 'SIGNED_OUT' || event === 'USER_DELETED') {
+    setUser(null);
+    cache.current = { user: null, timestamp: Date.now() };
+    setLoading(false);
+    if (window.location.pathname !== '/') {
+      navigate('/');
+    }
+    return;
+  }
 
-        if (session) {
-          clearTimeout(timeoutId);
-          timeoutId = setTimeout(() => {
-            checkUser();
-          }, 1000);
-        } else {
-          setUser(null);
-          cache.current = { user: null, timestamp: Date.now() };
-          setLoading(false);
-          if (window.location.pathname !== '/') {
-            navigate('/');
-          }
-        }
-      });
+  if (!session && event === 'INITIAL_SESSION') {
+    console.warn('Sessão inválida. Fazendo signOut automático.');
+    await supabase.auth.signOut();
+    return;
+  }
+
+  if (session?.user) {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => {
+      checkUser();
+    }, 1000);
+  }
+});
 
       return () => {
         subscription.unsubscribe();
