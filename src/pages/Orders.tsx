@@ -1,19 +1,27 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
-import { generateOrderPDF } from '../lib/pdf';
-import { ClipboardList, Search, Package, Truck, CheckCircle, XCircle, FileDown, ChevronDown, ChevronRight, Download, ShoppingBag, DivideIcon as LucideIcon } from 'lucide-react';
+import { 
+  ClipboardList, 
+  Search, 
+  Package, 
+  Truck, 
+  CheckCircle, 
+  XCircle,
+  FileDown,
+  Eye
+} from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import type { Order } from '../types/order';
 import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
 
 export default function Orders() {
   const { user } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
 
   useEffect(() => {
     fetchOrders();
@@ -26,7 +34,7 @@ export default function Orders() {
         .from('orders')
         .select(`
           *,
-          users:user_id (name, email),
+          customer:user_id (name, email),
           seller:seller_id (name)
         `);
 
@@ -53,10 +61,10 @@ export default function Orders() {
     try {
       const exportData = orders.map(order => ({
         'Número do Pedido': order.order_number,
-        'Cliente': order.users?.name,
-        'Email': order.users?.email,
+        'Cliente': order.customer?.name,
+        'Email': order.customer?.email,
         'Vendedor': order.seller?.name || 'N/A',
-        'Status': getStatusLabel(order.status).label,
+        'Status': getStatusLabel(order.status),
         'Total': formatCurrency(order.total),
         'Data': new Date(order.created_at).toLocaleDateString(),
         'Concluído em': order.completed_at ? new Date(order.completed_at).toLocaleDateString() : 'N/A'
@@ -74,9 +82,41 @@ export default function Orders() {
     }
   };
 
-  const handleExportPDF = async (order: Order) => {
+  const handleExportPDF = (order: Order) => {
     try {
-      await generateOrderPDF(order);
+      const doc = new jsPDF();
+      
+      // Cabeçalho
+      doc.setFontSize(20);
+      doc.text('Pedido #' + order.order_number, 20, 20);
+      
+      doc.setFontSize(12);
+      doc.text('Data: ' + new Date(order.created_at).toLocaleDateString(), 20, 30);
+      doc.text('Cliente: ' + order.customer?.name, 20, 40);
+      doc.text('Status: ' + getStatusLabel(order.status), 20, 50);
+      
+      // Itens
+      doc.setFontSize(14);
+      doc.text('Itens do Pedido', 20, 70);
+      
+      let y = 80;
+      order.items.forEach((item, index) => {
+        if (y > 250) {
+          doc.addPage();
+          y = 20;
+        }
+        doc.setFontSize(12);
+        doc.text(`${index + 1}. ${item.name}`, 20, y);
+        doc.text(`Qtd: ${item.quantity}`, 120, y);
+        doc.text(`R$ ${item.price.toFixed(2)}`, 160, y);
+        y += 10;
+      });
+      
+      // Total
+      doc.setFontSize(14);
+      doc.text(`Total: ${formatCurrency(order.total)}`, 20, y + 20);
+      
+      doc.save(`pedido-${order.order_number}.pdf`);
       toast.success('PDF gerado com sucesso!');
     } catch (error) {
       console.error('Erro ao gerar PDF:', error);
@@ -94,7 +134,7 @@ export default function Orders() {
     return statusMap[status] || { label: status, color: 'bg-gray-100 text-gray-800' };
   };
 
-  const getStatusIcon = (status: string): LucideIcon => {
+  const getStatusIcon = (status: string) => {
     const icons = {
       pending: ClipboardList,
       processing: Truck,
@@ -113,13 +153,9 @@ export default function Orders() {
 
   const filteredOrders = orders.filter(order =>
     order.order_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    order.users?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    order.users?.email.toLowerCase().includes(searchTerm.toLowerCase())
+    order.customer?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    order.customer?.email.toLowerCase().includes(searchTerm.toLowerCase())
   );
-
-  const toggleOrderExpansion = (orderId: string) => {
-    setExpandedOrder(expandedOrder === orderId ? null : orderId);
-  };
 
   return (
     <div>
@@ -156,164 +192,101 @@ export default function Orders() {
           </div>
         </div>
 
-        <div className="divide-y divide-gray-200">
+        <div className="overflow-x-auto">
           {loading ? (
             <div className="flex items-center justify-center p-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
             </div>
           ) : filteredOrders.length > 0 ? (
-            filteredOrders.map((order) => {
-              const status = getStatusLabel(order.status);
-              const StatusIcon = getStatusIcon(order.status);
-              const isExpanded = expandedOrder === order.id;
-              
-              return (
-                <div key={order.id} className="group">
-                  {/* Cabeçalho do Pedido */}
-                  <div
-                    onClick={() => toggleOrderExpansion(order.id)}
-                    className="p-4 hover:bg-gray-50 cursor-pointer transition-colors duration-150"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-4">
-                        <div className="flex-shrink-0">
-                          {isExpanded ? (
-                            <ChevronDown className="h-5 w-5 text-gray-400" />
-                          ) : (
-                            <ChevronRight className="h-5 w-5 text-gray-400" />
-                          )}
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Pedido
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Cliente
+                  </th>
+                  {(user?.role === 'master' || user?.role === 'admin') && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Vendedor
+                    </th>
+                  )}
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Total
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Data
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Ações
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {filteredOrders.map((order) => {
+                  const StatusIcon = getStatusIcon(order.status);
+                  const status = getStatusLabel(order.status);
+                  
+                  return (
+                    <motion.tr
+                      key={order.id}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                    >
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm font-medium text-gray-900">
+                          #{order.order_number}
                         </div>
-                        <div>
-                          <div className="flex items-center">
-                            <span className="text-sm font-medium text-gray-900 mr-2">
-                              #{order.order_number}
-                            </span>
-                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}>
-                              <StatusIcon className="h-4 w-4 mr-1" />
-                              {status.label}
-                            </span>
-                          </div>
-                          <div className="mt-1 text-sm text-gray-500">
-                            {order.users?.name} • {new Date(order.created_at).toLocaleDateString()}
-                          </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm text-gray-900">
+                          {order.customer?.name}
                         </div>
-                      </div>
-                      <div className="flex items-center space-x-4">
-                        <div className="text-right">
-                          <div className="text-sm font-medium text-gray-900">
-                            {formatCurrency(order.total)}
-                          </div>
-                          <div className="text-sm text-gray-500">
-                            {order.items.length} {order.items.length === 1 ? 'item' : 'itens'}
-                          </div>
+                        <div className="text-sm text-gray-500">
+                          {order.customer?.email}
                         </div>
+                      </td>
+                      {(user?.role === 'master' || user?.role === 'admin') && (
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {order.seller?.name || 'N/A'}
+                        </td>
+                      )}
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}>
+                          <StatusIcon className="h-4 w-4 mr-1" />
+                          {status.label}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {formatCurrency(order.total)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {new Date(order.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleExportPDF(order);
-                          }}
-                          className="text-gray-400 hover:text-gray-600 transition-colors duration-200"
-                          title="Baixar PDF"
+                          onClick={() => handleExportPDF(order)}
+                          className="text-indigo-600 hover:text-indigo-900 mr-3"
+                          title="Gerar PDF"
                         >
-                          <Download className="h-5 w-5" />
+                          <FileDown className="h-5 w-5" />
                         </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Detalhes do Pedido */}
-                  <AnimatePresence>
-                    {isExpanded && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.2 }}
-                        className="overflow-hidden bg-gray-50 border-t border-gray-200"
-                      >
-                        <div className="p-4">
-                          {/* Informações do Cliente */}
-                          <div className="mb-6">
-                            <h4 className="text-sm font-medium text-gray-900 mb-2">
-                              Informações do Cliente
-                            </h4>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                              <div>
-                                <p className="text-sm text-gray-500">Nome</p>
-                                <p className="text-sm font-medium text-gray-900">
-                                  {order.users?.name}
-                                </p>
-                              </div>
-                              <div>
-                                <p className="text-sm text-gray-500">Email</p>
-                                <p className="text-sm font-medium text-gray-900">
-                                  {order.users?.email}
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Itens do Pedido */}
-                          <div>
-                            <h4 className="text-sm font-medium text-gray-900 mb-2">
-                              Itens do Pedido
-                            </h4>
-                            <div className="space-y-2">
-                              {order.items.map((item: any, index: number) => (
-                                <div
-                                  key={index}
-                                  className="flex items-center justify-between p-3 bg-white rounded-lg shadow-sm"
-                                >
-                                  <div className="flex items-center">
-                                    {item.image_url ? (
-                                      <img
-                                        src={item.image_url}
-                                        alt={item.name}
-                                        className="h-12 w-12 rounded object-cover"
-                                      />
-                                    ) : (
-                                      <div className="h-12 w-12 rounded bg-gray-200 flex items-center justify-center">
-                                        <ShoppingBag className="h-6 w-6 text-gray-400" />
-                                      </div>
-                                    )}
-                                    <div className="ml-4">
-                                      <div className="text-sm font-medium text-gray-900">
-                                        {item.name}
-                                      </div>
-                                      <div className="text-sm text-gray-500">
-                                        Quantidade: {item.quantity}
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div className="text-right">
-                                    <div className="text-sm font-medium text-gray-900">
-                                      {formatCurrency(item.price * item.quantity)}
-                                    </div>
-                                    <div className="text-sm text-gray-500">
-                                      {formatCurrency(item.price)} cada
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Total e Ações */}
-                          <div className="mt-6 flex items-center justify-between">
-                            <div className="text-sm text-gray-500">
-                              Total de {order.items.length} {order.items.length === 1 ? 'item' : 'itens'}
-                            </div>
-                            <div className="text-lg font-medium text-gray-900">
-                              {formatCurrency(order.total)}
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              );
-            })
+                        <button
+                          className="text-gray-600 hover:text-gray-900"
+                          title="Visualizar Detalhes"
+                        >
+                          <Eye className="h-5 w-5" />
+                        </button>
+                      </td>
+                    </motion.tr>
+                  );
+                })}
+              </tbody>
+            </table>
           ) : (
             <div className="flex flex-col items-center justify-center p-8 text-gray-500">
               <ClipboardList className="h-12 w-12 mb-3" />
