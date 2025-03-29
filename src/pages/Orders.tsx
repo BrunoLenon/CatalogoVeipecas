@@ -125,7 +125,28 @@ export default function Orders() {
     }
   };
 
-  const handleExportPDF = async (order: Order) => {
+  
+const handleMarkAsCompleted = async (orderId: string) => {
+  try {
+    const { error } = await supabase
+      .from('orders')
+      .update({
+        status: 'completed',
+        completed_at: new Date().toISOString()
+      })
+      .eq('id', orderId);
+
+    if (error) throw error;
+
+    toast.success('Pedido marcado como concluído!');
+    fetchOrders(); // Atualiza a lista
+  } catch (error) {
+    console.error('Erro ao concluir pedido:', error);
+    toast.error('Erro ao concluir pedido');
+  }
+};
+
+const handleExportPDF = async (order: Order) => {
     try {
       if (!order) {
         toast.error('Pedido não encontrado');
@@ -462,7 +483,15 @@ export default function Orders() {
                         >
                           <Eye className="h-5 w-5" />
                         </button>
-                      </td>
+                      {user?.role === 'seller' && order.status !== 'completed' && (
+              <button
+                onClick={() => handleMarkAsCompleted(order.id)}
+                className="text-green-600 hover:text-green-900 ml-3"
+                title="Marcar como concluído"
+              >
+                <CheckCircle className="h-5 w-5" />
+              </button>
+            )}</td>
                     </motion.tr>
                   );
                 })}
