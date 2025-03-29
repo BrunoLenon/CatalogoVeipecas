@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './lib/auth';
 import PrivateRoute from './components/PrivateRoute';
@@ -12,8 +12,11 @@ import Orders from './pages/Orders';
 import Settings from './pages/Settings';
 import MyAccount from './pages/MyAccount';
 import SystemCustomization from './pages/SystemCustomization';
+import useAutoLogout from './hooks/useAutoLogout';
 
 function App() {
+  useAutoLogout(10);
+
   return (
     <Router future={{ 
       v7_startTransition: true, 
@@ -24,7 +27,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Login />} />
           <Route
-            path="/home"
+            path="/inicio"
             element={
               <PrivateRoute>
                 <Layout>
@@ -94,6 +97,18 @@ function App() {
             }
           />
           <Route
+            path="/sistema"
+            element={
+              <PrivateRoute>
+                <Layout>
+                  <SystemCustomization />
+                </Layout>
+              </PrivateRoute>
+            }
+          />
+                  <Route path="/home" element={<Navigate to="/inicio" replace />} />
+
+          <Route
             path="/personalizacao"
             element={
               <PrivateRoute>
@@ -103,8 +118,7 @@ function App() {
               </PrivateRoute>
             }
           />
-          <Route path="*" element={<div>Página não encontrada</div>} />
-        </Routes>
+</Routes>
       </AuthProvider>
     </Router>
   );

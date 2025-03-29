@@ -82,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               cache.current = { user: newUser, timestamp: Date.now() };
               setUser(newUser);
               if (window.location.pathname === '/') {
-                navigate('/home');
+                navigate('/inicio');
               }
             }
           } else {
@@ -96,7 +96,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           cache.current = { user: userData, timestamp: Date.now() };
           setUser(userData);
           if (window.location.pathname === '/') {
-            navigate('/home');
+            navigate('/inicio');
           }
         }
       } else {
@@ -142,7 +142,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   if (!session && event === 'INITIAL_SESSION') {
-    console.warn('Sessão inválida. Fazendo signOut automático.');
+    if (process.env.NODE_ENV === 'development') console.warn('Sessão inválida. Fazendo signOut automático.');
     await supabase.auth.signOut();
     return;
   }
@@ -238,7 +238,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         cache.current = { user: userRecord, timestamp: Date.now() };
         setUser(userRecord);
-        navigate('/home');
+        navigate('/inicio');
       }
     } catch (error: any) {
       console.error('Erro no login:', error);
