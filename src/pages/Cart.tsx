@@ -2,13 +2,14 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../lib/auth';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
-import { 
-  ShoppingCart, 
-  Trash2, 
-  Plus, 
-  Minus, 
+import {
+  ShoppingCart,
+  Trash2,
+  Plus,
+  Minus,
   ShoppingBag,
-  ArrowRight
+  ArrowRight,
+  AlertTriangle
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -16,6 +17,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 interface CartItem {
   id: string;
   name: string;
+  description?: string;
+  code?: string;
   price: number;
   quantity: number;
   image_url?: string;
@@ -26,6 +29,7 @@ interface CartData {
   id: string;
   items: CartItem[];
   total: number;
+  notes?: string;
 }
 
 export default function Cart() {
@@ -34,6 +38,7 @@ export default function Cart() {
   const [cart, setCart] = useState<CartData | null>(null);
   const [loading, setLoading] = useState(true);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
+  const [notes, setNotes] = useState('');
 
   useEffect(() => {
     if (user) {
@@ -45,13 +50,9 @@ export default function Cart() {
     try {
       setLoading(true);
 
-      // Chamar função que cria carrinho se não existir
-      const { data: cartId } = await supabase
-        .rpc('get_or_create_cart', { p_user_id: user?.id });
-
+      const { data: cartId } = await supabase.rpc('get_or_create_cart', { p_user_id: user?.id });
       if (!cartId) throw new Error('Erro ao criar carrinho');
 
-      // Buscar dados do carrinho
       const { data, error } = await supabase
         .from('cart')
         .select('*')
@@ -59,8 +60,28 @@ export default function Cart() {
         .single();
 
       if (error) throw error;
-      
-      setCart(data);
+
+      const productIds = data.items.map((item: CartItem) => item.id);
+
+      const { data: productsData, error: productsError } = await supabase
+        .from('products')
+        .select('id, code, description, stock')
+        .in('id', productIds);
+
+      if (productsError) throw productsError;
+
+      const enrichedItems = data.items.map((item: CartItem) => {
+        const productDetails = productsData.find(p => p.id === item.id);
+        return {
+          ...item,
+          code: productDetails?.code || item.code,
+          description: productDetails?.description || item.description,
+          stock: productDetails?.stock || item.stock
+        };
+      });
+
+      setCart({ ...data, items: enrichedItems });
+      setNotes(data.notes || '');
     } catch (error) {
       console.error('Erro ao buscar carrinho:', error);
       toast.error('Erro ao carregar carrinho');
@@ -75,11 +96,6 @@ export default function Cart() {
     try {
       const updatedItems = cart.items.map(item => {
         if (item.id === itemId) {
-          // Verificar estoque
-          if (newQuantity > item.stock) {
-            toast.error('Quantidade maior que o estoque disponível');
-            return item;
-          }
           return { ...item, quantity: newQuantity };
         }
         return item;
@@ -98,13 +114,7 @@ export default function Cart() {
 
       if (error) throw error;
 
-      setCart(prev => prev ? {
-        ...prev,
-        items: updatedItems,
-        total: newTotal
-      } : null);
-
-      toast.success('Carrinho atualizado');
+      setCart(prev => prev ? { ...prev, items: updatedItems, total: newTotal } : null);
     } catch (error) {
       console.error('Erro ao atualizar quantidade:', error);
       toast.error('Erro ao atualizar carrinho');
@@ -129,16 +139,31 @@ export default function Cart() {
 
       if (error) throw error;
 
-      setCart(prev => prev ? {
-        ...prev,
-        items: updatedItems,
-        total: newTotal
-      } : null);
-
+      setCart(prev => prev ? { ...prev, items: updatedItems, total: newTotal } : null);
       toast.success('Item removido do carrinho');
     } catch (error) {
       console.error('Erro ao remover item:', error);
       toast.error('Erro ao remover item do carrinho');
+    }
+  };
+
+  const saveNotes = async () => {
+    if (!cart) return;
+
+    try {
+      const { error } = await supabase
+        .from('cart')
+        .update({
+          notes: notes,
+          updated_at: new Date().toISOString() // Adicionei updated_at que estava faltando
+        })
+        .eq('id', cart.id);
+
+      if (error) throw error;
+      toast.success('Observações salvas');
+    } catch (error) {
+      console.error('Erro ao salvar observações:', error);
+      toast.error('Erro ao salvar observações');
     }
   };
 
@@ -148,10 +173,8 @@ export default function Cart() {
     try {
       setIsCheckingOut(true);
 
-      // Gerar número do pedido (formato: ANO + MÊS + 4 dígitos aleatórios)
       const orderNumber = `${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}${Math.floor(1000 + Math.random() * 9000)}`;
 
-      // Criar pedido
       const { data: order, error: orderError } = await supabase
         .from('orders')
         .insert({
@@ -160,30 +183,33 @@ export default function Cart() {
           seller_id: user?.seller_id,
           items: cart.items,
           total: cart.total,
-          status: 'pending'
+          status: 'pending',
+          notes: notes
         })
         .select()
         .single();
 
       if (orderError) throw orderError;
 
-      // Finalizar carrinho
+      // Atualiza apenas os itens que não excedem o estoque
+      for (const item of cart.items) {
+        if (item.quantity <= item.stock) {
+          const { error: stockError } = await supabase
+            .from('products')
+            .update({ stock: item.stock - item.quantity })
+            .eq('id', item.id);
+
+          if (stockError) throw stockError;
+        }
+      }
+
+      // Marca o carrinho como finalizado
       const { error: cartError } = await supabase
         .from('cart')
         .update({ is_finalized: true })
         .eq('id', cart.id);
 
       if (cartError) throw cartError;
-
-      // Atualizar estoque dos produtos
-      for (const item of cart.items) {
-        const { error: stockError } = await supabase
-          .from('products')
-          .update({ stock: item.stock - item.quantity })
-          .eq('id', item.id);
-
-        if (stockError) throw stockError;
-      }
 
       toast.success('Pedido realizado com sucesso!');
       navigate('/pedidos');
@@ -227,7 +253,7 @@ export default function Cart() {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -20 }}
-                    className="flex items-center py-4 space-x-4"
+                    className="flex items-start py-4 space-x-4"
                   >
                     <div className="flex-shrink-0 w-16 h-16">
                       {item.image_url ? (
@@ -242,21 +268,34 @@ export default function Cart() {
                         </div>
                       )}
                     </div>
-                    
+
                     <div className="flex-1">
-                      <h3 className="text-lg font-medium text-gray-900">
+                      <p className="text-xs font-semibold text-gray-400 uppercase mb-1">
+                        Código: {item.code || item.id}
+                      </p>
+                      <h3 className="text-base sm:text-lg font-semibold text-gray-900">
                         {item.name}
                       </h3>
-                      <p className="mt-1 text-sm text-gray-500">
+                      <p className="text-sm text-gray-600 mt-1">
+                        {item.description || 'Sem descrição disponível'}
+                      </p>
+                      <p className="mt-2 text-sm font-medium text-indigo-600">
                         {formatCurrency(item.price)}
                       </p>
+                      {item.quantity > item.stock && (
+                        <div className="mt-2 flex items-center text-yellow-600 text-sm">
+                          <AlertTriangle className="h-4 w-4 mr-1" />
+                          <span>Quantidade para orçamento (estoque: {item.stock})</span>
+                        </div>
+                      )}
                     </div>
 
-                    <div className="flex items-center space-x-4">
+                    <div className="flex flex-col items-end justify-between space-y-2">
                       <div className="flex items-center border rounded-md">
                         <button
-                          onClick={() => updateItemQuantity(item.id, Math.max(0, item.quantity - 1))}
-                          className="p-2 text-gray-600 hover:text-gray-900"
+                          onClick={() => updateItemQuantity(item.id, item.quantity - 1)}
+                          disabled={item.quantity <= 1}
+                          className="p-2 text-gray-600 hover:text-gray-900 disabled:opacity-50"
                         >
                           <Minus className="h-4 w-4" />
                         </button>
@@ -266,7 +305,6 @@ export default function Cart() {
                         <button
                           onClick={() => updateItemQuantity(item.id, item.quantity + 1)}
                           className="p-2 text-gray-600 hover:text-gray-900"
-                          disabled={item.quantity >= item.stock}
                         >
                           <Plus className="h-4 w-4" />
                         </button>
@@ -279,18 +317,27 @@ export default function Cart() {
                         <Trash2 className="h-5 w-5" />
                       </button>
                     </div>
-
-                    <div className="text-right">
-                      <p className="text-lg font-medium text-gray-900">
-                        {formatCurrency(item.price * item.quantity)}
-                      </p>
-                    </div>
                   </motion.div>
                 ))}
               </AnimatePresence>
             </div>
 
             <div className="p-6 bg-gray-50">
+              <div className="mb-4">
+                <label htmlFor="notes" className="block text-sm font-medium text-gray-700 mb-1">
+                  Observações
+                </label>
+                <textarea
+                  id="notes"
+                  rows={3}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  onBlur={saveNotes}
+                  className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
+                  placeholder="Alguma observação sobre o pedido?"
+                />
+              </div>
+
               <div className="flex items-center justify-between">
                 <p className="text-lg font-medium text-gray-900">Total</p>
                 <p className="text-2xl font-semibold text-gray-900">
